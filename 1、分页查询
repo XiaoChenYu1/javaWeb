@@ -1,0 +1,158 @@
+1.分页查询的分析：
+		* 前端页面：
+			前端传入数据：currentPage当前页面数，rows当前页面上查询最多能查询多少条数据放在上面
+			数据传入到findUserByPageServlet服务当中
+		* 后端数据处理：
+			web层：
+				定义findUserByPageServlet服务类，用户接受前端传进来的数据，并调用{service}服务层
+				完成分页查询的数据，并将数据储存到request数据域当中，并转发到前端页面响应回去
+			service服务层：
+				定义findUserByPage方法完成相关页面上应当显示用户的查询用户方法。
+				注意：这里主要完成的目标就是
+					= 编写出PageBean类对应的信息，将这些信息{pageBean<User>}返回到findUserByPageServlet
+					= totalCount【总用户数据数】 totalPage【总页数】 list【每一页对应的所用用户数据】
+					  currentPage【当前页码，前端传进来的】  rows【当前页面最多显示数，前端传进来的】
+					= 将这些信息封装成PageBean类，完成之后调用UserDaoServlet完成查询所有用户信息
+					= 封装完成之后就将pageBean引用返回给findUserByPageServle
+			dao数据访问层：
+				根据service服务层，传进来的数据查询对应的信息。
+				= 定义方法查询：totalCount【总用户数据数】		：findTotalCount()返回int
+				= 定义方法查询：totalPage【总页数】				：findTotalPage()返回int
+				= 定义方法查询：list【每一页对应的所用用户数据】：findUserList(int start,int end)返回List<User>
+		* 响应前端：
+			后端将数据处理完毕，并返回信息，前端将信息进行显示。
+     
+     * 注意：这里涉及到几个计算问题：
+			总页数：totalPage = totalCount%rows == 0 ? totalCount/rows : totalCount/rows + 1;
+			每一页查询起始索引值start：start = (currentPage - 1) * rows;
+			= 这两个计算是固定好的，是数据库设置分页查询的基本。
+  
+2.分页功能的实现理解：
+		注意：服务的调用路径问题
+		转发：request.getRequestDispatcher("/具体路径...");
+		重定向：response.sendRedirect(request.getContextPath + "/具体路径...");
+		
+		详细内容就是：具体的三层架构之间的调用，接口/接口实现类的编写，方法的具体实现与具体调用规则。
+		在编写Servlet的时候要注意前端是以什么方式进行传递的
+			post/get：在Serlvet中doGet()/doPost()方法都要编写互相调用。
+		
+		在service服务层的数据处理。  
+    
+    
+ 代码实现：【逐层调用自上而下】
+  Web层：
+  protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+        // 获取请求参数：当前页面数[currentPage]
+        String currentPage = request.getParameter("currentPage");
+        String rows = request.getParameter("rows"); // 定义每一页显示多少信息条数
+        // 这下面就是防止，访问的时候没有传入参数出现数据参数：NumberFormat数数字格式化错误。
+        if(currentPage == null || "".equals(currentPage)){
+            currentPage = "1";
+        }
+        if( rows == null || "".equals(rows)){
+            rows = "5";
+        }
+        // 调用服务层来完成用户信息的分页查询
+        UserService userServiceImpl = new UserServiceImpl();
+        PageBean<User> pageBean = userServiceImpl.findUserByPage(currentPage,rows);
+        System.out.println(pageBean);
+        // 储存查到的信息，转发给前端userList.jsp显示用户信息页面
+        request.setAttribute("pageBean",pageBean);
+        request.getRequestDispatcher("/userList.jsp").forward(request,response);
+    }
+Service层：
+  public PageBean<User> findUserByPage(String _currentPage, String _rows) {
+        // 1、将前端传进来的数据，进行格式化
+        int currentPage = Integer.parseInt(_currentPage);
+        int rows = Integer.parseInt(_rows);
+        // 2、创建PageBean对象，来保存当前对象 --> 包括了PageBean中的各种信息
+        PageBean<User> pageBean = new PageBean<>(currentPage,rows);
+        // 3、计算出PageBean中的各种参数信息
+        int totalCount = dao.findTotalCount();
+        pageBean.setTotalCount(totalCount);
+        // 4、计算总页数
+        int totalPage = (totalCount%rows) == 0 ? (totalCount/rows) : (totalCount/rows) + 1;
+        pageBean.setTotalPage(totalPage);
+        // 5、查询出当前页面，应当显示所有的用户信息集合，，，需要计算start来分页查询
+        int start = (currentPage-1) * rows;
+        List<User> userList =  dao.findUserByPage(start,rows);
+        pageBean.setList(userList);
+        return pageBean;
+    }
+    
+Dao层：
+  【1、】
+  public int findTotalCount() {
+        String sql = "select count(lotId) from lotUsers";
+        // JDBC编程六步：注册驱动，获取连接，获取数据库操作对象，执行sql语句，处理查询结果集，释放资源
+        Connection conn = null;
+        PreparedStatement ps = null;
+        ResultSet rs = null;
+        int totalCount = 0;
+        try{
+            // 前几步合起来写
+            conn = JDBCUtil.getConnection();
+            ps = JDBCUtil.getPreparedStatement(sql);
+            // 执行Sql语句
+            rs = ps.executeQuery();
+            if(rs.next()){
+                // 说明查询出来了结果，那就返回
+                 totalCount = rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally{
+            // 释放资源
+            JDBCUtil.close(conn,ps,rs);
+        }
+        return totalCount;
+    }
+   
+  【2、】：具体的分页查询功能实现，之前的都是数据准备过程。
+   public List<User> findUserByPage(int start, int rows) {
+         String sql = "select * from lotUsers limit ?,? ";
+         Connection conn = null;
+         PreparedStatement ps = null;
+         ResultSet rs = null;
+         List<User> userList = new ArrayList<>();;
+         try{
+             // JDBC编程六部
+             conn = JDBCUtil.getConnection();
+             ps = JDBCUtil.getPreparedStatement(sql);
+             // 给?设置值
+             ps.setInt(1,start);
+             ps.setInt(2,rows);
+             // 执行sql语句
+             rs = ps.executeQuery();
+             while ( rs.next() ) {
+                 // 获取查询出来的所有用户信息。
+                 int userId = rs.getInt(1);
+                 String userName = rs.getString(2);
+                 String userSex = rs.getString(3);
+                 String userPhone = rs.getString(4);
+                 // 疯转数据成为用户
+                 User user = new User(userId,userName,userSex,userPhone);
+                 System.out.println(user.toString());
+                 userList.add(user);
+             }
+         } catch (SQLException e) {
+             e.printStackTrace();
+         }
+        return userList;
+    }
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
